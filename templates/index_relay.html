@@ -1,0 +1,1255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>视频通话</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 480px;
+            margin: 0 auto;
+            padding: 16px;
+            min-height: 100vh;
+        }
+
+        /* 头部 */
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            color: #667eea;
+            margin-bottom: 8px;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            color: #666;
+            font-size: 14px;
+        }
+
+        .user-badge {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #4ade80;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* 在线用户列表 */
+        .user-list-section {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .user-count {
+            background: #f3f4f6;
+            color: #666;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+        }
+
+        .user-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .user-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px;
+            background: #f9fafb;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+        }
+
+        .user-item:hover {
+            background: #f3f4f6;
+            transform: translateX(4px);
+        }
+
+        .user-item.in-call {
+            opacity: 0.6;
+        }
+
+        .user-item-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .user-avatar {
+            width: 44px;
+            height: 44px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 16px;
+        }
+
+        .user-name {
+            font-weight: 500;
+            color: #333;
+        }
+
+        .user-status {
+            font-size: 12px;
+            color: #9ca3af;
+        }
+
+        .call-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 24px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .call-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .call-btn:disabled {
+            background: #d1d5db;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #9ca3af;
+        }
+
+        .empty-state svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        /* 通话界面 */
+        .call-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #1a1a2e;
+            z-index: 1000;
+            display: none;
+            flex-direction: column;
+        }
+
+        .call-overlay.active {
+            display: flex;
+        }
+
+        .video-container {
+            flex: 1;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #0f0f23;
+        }
+
+        .remote-video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .local-video-container {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 120px;
+            height: 160px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            border: 2px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .local-video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            background: #333;
+        }
+
+        .call-info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+        }
+
+        .call-status {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .call-timer {
+            font-size: 14px;
+            opacity: 0.8;
+        }
+
+        .call-controls {
+            display: flex;
+            justify-content: center;
+            gap: 24px;
+            padding: 24px;
+            background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+        }
+
+        .control-btn {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 24px;
+        }
+
+        .control-btn.mute {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+
+        .control-btn.video {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+
+        .control-btn.end {
+            background: #ef4444;
+            color: white;
+        }
+
+        .control-btn:hover {
+            transform: scale(1.1);
+        }
+
+        .control-btn.active {
+            background: #4ade80;
+        }
+
+        .control-btn.off {
+            background: #ef4444;
+        }
+
+        /* 来电弹窗 */
+        .incoming-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 2000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .incoming-modal.active {
+            display: flex;
+        }
+
+        .incoming-content {
+            background: white;
+            border-radius: 24px;
+            padding: 40px;
+            text-align: center;
+            max-width: 320px;
+            width: 90%;
+            animation: slideUp 0.3s ease;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .incoming-avatar {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 32px;
+            font-weight: 600;
+            margin: 0 auto 20px;
+            animation: ring 1.5s infinite;
+        }
+
+        @keyframes ring {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .incoming-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        .incoming-subtitle {
+            color: #666;
+            margin-bottom: 32px;
+        }
+
+        .incoming-actions {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+        }
+
+        .action-btn {
+            padding: 14px 32px;
+            border-radius: 28px;
+            border: none;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .action-btn.reject {
+            background: #fee2e2;
+            color: #ef4444;
+        }
+
+        .action-btn.accept {
+            background: #d1fae5;
+            color: #10b981;
+        }
+
+        .action-btn:hover {
+            transform: scale(1.05);
+        }
+
+        /* 呼叫中弹窗 */
+        .calling-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            z-index: 2000;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+        }
+
+        .calling-modal.active {
+            display: flex;
+        }
+
+        .calling-avatar {
+            width: 120px;
+            height: 120px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 48px;
+            font-weight: 600;
+            margin-bottom: 24px;
+            animation: pulse-ring 2s infinite;
+        }
+
+        @keyframes pulse-ring {
+            0%, 100% { 
+                transform: scale(1);
+                box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.4);
+            }
+            50% { 
+                transform: scale(1.05);
+                box-shadow: 0 0 0 20px rgba(255, 255, 255, 0);
+            }
+        }
+
+        .calling-name {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .calling-status {
+            font-size: 16px;
+            opacity: 0.8;
+            margin-bottom: 48px;
+        }
+
+        .calling-cancel {
+            background: #ef4444;
+            color: white;
+            border: none;
+            padding: 16px 48px;
+            border-radius: 28px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .calling-cancel:hover {
+            transform: scale(1.05);
+        }
+
+        /* Toast 提示 */
+        .toast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-100px);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 3000;
+            transition: transform 0.3s ease;
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+        }
+
+        /* 响应式 */
+        @media (max-width: 380px) {
+            .container {
+                padding: 12px;
+            }
+
+            .header h1 {
+                font-size: 20px;
+            }
+
+            .local-video-container {
+                width: 100px;
+                height: 133px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 头部 -->
+        <div class="header">
+            <h1>📹 视频通话</h1>
+            <div class="user-info">
+                <span class="user-badge" id="myUsername">加载中...</span>
+                <span class="status">
+                    <span class="status-dot"></span>
+                    在线
+                </span>
+            </div>
+        </div>
+
+        <!-- 在线用户列表 -->
+        <div class="user-list-section">
+            <div class="section-title">
+                在线用户
+                <span class="user-count" id="userCount">0</span>
+            </div>
+            <div class="user-list" id="userList">
+                <div class="empty-state">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+                    </svg>
+                    <p>暂无在线用户</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 来电弹窗 -->
+    <div class="incoming-modal" id="incomingModal">
+        <div class="incoming-content">
+            <div class="incoming-avatar" id="incomingAvatar">?</div>
+            <div class="incoming-title" id="incomingName">未知用户</div>
+            <div class="incoming-subtitle">邀请你进行视频通话</div>
+            <div class="incoming-actions">
+                <button class="action-btn reject" onclick="rejectCall()">
+                    <span>✕</span> 拒绝
+                </button>
+                <button class="action-btn accept" onclick="acceptCall()">
+                    <span>✓</span> 接听
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 呼叫中弹窗 -->
+    <div class="calling-modal" id="callingModal">
+        <div class="calling-avatar" id="callingAvatar">?</div>
+        <div class="calling-name" id="callingName">未知用户</div>
+        <div class="calling-status">正在等待对方接听...</div>
+        <button class="calling-cancel" onclick="cancelCall()">取消呼叫</button>
+    </div>
+
+    <!-- 通话界面 -->
+    <div class="call-overlay" id="callOverlay">
+        <div class="video-container">
+            <video class="remote-video" id="remoteVideo" autoplay playsinline></video>
+            <div class="local-video-container">
+                <video class="local-video" id="localVideo" autoplay playsinline muted></video>
+            </div>
+            <div class="call-info">
+                <div class="call-status" id="callStatus">通话中</div>
+                <div class="call-timer" id="callTimer">00:00</div>
+            </div>
+        </div>
+        <div class="call-controls">
+            <button class="control-btn mute" id="muteBtn" onclick="toggleMute()">
+                🎤
+            </button>
+            <button class="control-btn video" id="videoBtn" onclick="toggleVideo()">
+                📹
+            </button>
+            <button class="control-btn end" onclick="endCall()">
+                📞
+            </button>
+        </div>
+    </div>
+
+    <!-- Toast 提示 -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // 全局变量
+        let socket = null;
+        let mySid = null;
+        let myUsername = null;
+        let currentRoom = null;
+        let peerConnection = null;
+        let localStream = null;
+        let callTimer = null;
+        let callStartTime = null;
+        let iceCandidateQueue = [];
+        let isMuted = false;
+        let isVideoOff = false;
+
+        // WebRTC 配置 - 使用公共 STUN/TURN 服务器
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' }
+            ],
+            iceCandidatePoolSize: 10
+        };
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            initSocket();
+        });
+
+        // 初始化 WebSocket 连接
+        function initSocket() {
+            socket = io();
+            socket.on('connect', () => {
+                console.log('已连接到服务器');
+                mySid = socket.id;
+                console.log('我的SID:', mySid);
+            });
+
+            socket.on('user_assigned', (data) => {
+                myUsername = data.username;
+                document.getElementById('myUsername').textContent = myUsername;
+            });
+
+            socket.on('user_list', (data) => {
+                updateUserList(data.users);
+            });
+
+            socket.on('incoming_call', (data) => {
+                handleIncomingCall(data);
+            });
+
+            socket.on('call_ringing', (data) => {
+                handleCallRinging(data);
+            });
+
+            socket.on('call_accepted', (data) => {
+                handleCallAccepted(data);
+            });
+
+            socket.on('call_rejected', (data) => {
+                handleCallRejected(data);
+            });
+
+            socket.on('call_ended', (data) => {
+                handleCallEnded(data);
+            });
+
+            socket.on('call_error', (data) => {
+                showToast(data.message);
+                resetCallState();
+            });
+
+            // WebRTC 信令 - 服务器中转
+            socket.on('peer_joined', (data) => {
+                console.log('对方已加入房间:', data);
+            });
+
+            socket.on('offer', (data) => {
+                handleOffer(data);
+            });
+
+            socket.on('answer', (data) => {
+                handleAnswer(data);
+            });
+
+            socket.on('ice_candidate', (data) => {
+                handleICECandidate(data);
+            });
+
+            socket.on('peer_stream_ready', (data) => {
+                console.log('对方媒体流已就绪:', data);
+            });
+        }
+
+        // 更新用户列表
+        function updateUserList(users) {
+            const userListEl = document.getElementById('userList');
+            const userCountEl = document.getElementById('userCount');
+            
+            // 确保 mySid 已设置
+            if (!mySid && socket) {
+                mySid = socket.id;
+            }
+            
+            userCountEl.textContent = users.length;
+
+            if (users.length === 0) {
+                userListEl.innerHTML = `
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+                        </svg>
+                        <p>暂无在线用户</p>
+                    </div>
+                `;
+                return;
+            }
+
+            userListEl.innerHTML = users.map(user => {
+                const isMe = user.sid === mySid;
+                const inCall = user.in_call;
+                return `
+                <div class="user-item ${inCall ? 'in-call' : ''}">
+                    <div class="user-item-info">
+                        <div class="user-avatar">${user.username.slice(0, 2).toUpperCase()}</div>
+                        <div>
+                            <div class="user-name">
+                                ${user.username} ${isMe ? '<span style="color:#667eea;font-size:12px;">(我)</span>' : ''}
+                            </div>
+                            ${inCall ? '<div class="user-status">通话中</div>' : ''}
+                        </div>
+                    </div>
+                    ${isMe 
+                        ? '<span style="color:#9ca3af;font-size:14px;">在线</span>' 
+                        : inCall
+                            ? '<span style="color:#9ca3af;font-size:14px;">忙碌</span>'
+                            : `<button class="call-btn" onclick="startCall('${user.sid}', '${user.username}')">
+                                <span>📹</span> 发起通话
+                               </button>`
+                    }
+                </div>
+            `}).join('');
+        }
+
+        // 发起通话
+        async function startCall(targetSid, targetName) {
+            currentRoom = {
+                targetSid: targetSid,
+                targetName: targetName,
+                isCaller: true
+            };
+
+            document.getElementById('callingAvatar').textContent = targetName.slice(0, 2).toUpperCase();
+            document.getElementById('callingName').textContent = targetName;
+            document.getElementById('callingModal').classList.add('active');
+
+            socket.emit('call_request', { target_sid: targetSid });
+        }
+
+        // 处理呼叫中
+        function handleCallRinging(data) {
+            currentRoom = {
+                ...currentRoom,
+                roomId: data.room_id,
+                targetSid: data.target_sid,
+                targetName: data.target_name
+            };
+        }
+
+        // 取消呼叫
+        function cancelCall() {
+            if (currentRoom && currentRoom.roomId) {
+                socket.emit('call_response', {
+                    room_id: currentRoom.roomId,
+                    accepted: false,
+                    caller_sid: currentRoom.targetSid
+                });
+            }
+            document.getElementById('callingModal').classList.remove('active');
+            resetCallState();
+        }
+
+        // 处理来电
+        function handleIncomingCall(data) {
+            currentRoom = {
+                callerSid: data.caller_sid,
+                callerName: data.caller_name,
+                roomId: data.room_id,
+                isCaller: false
+            };
+
+            document.getElementById('incomingAvatar').textContent = data.caller_name.slice(0, 2).toUpperCase();
+            document.getElementById('incomingName').textContent = data.caller_name;
+            document.getElementById('incomingModal').classList.add('active');
+        }
+
+        // 接听电话
+        async function acceptCall() {
+            document.getElementById('incomingModal').classList.remove('active');
+            
+            if (!currentRoom) return;
+
+            // 先初始化本地媒体
+            try {
+                await initLocalStream();
+            } catch (err) {
+                console.error('初始化媒体失败:', err);
+                showToast('无法访问摄像头或麦克风');
+                socket.emit('call_response', {
+                    room_id: currentRoom.roomId,
+                    accepted: false,
+                    caller_sid: currentRoom.callerSid
+                });
+                return;
+            }
+
+            // 通知服务器已接听
+            socket.emit('call_response', {
+                room_id: currentRoom.roomId,
+                accepted: true,
+                caller_sid: currentRoom.callerSid
+            });
+
+            // 加入房间
+            socket.emit('join_room', { room_id: currentRoom.roomId });
+
+            // 显示通话界面
+            showCallOverlay(currentRoom.callerName);
+        }
+
+        // 拒绝电话
+        function rejectCall() {
+            document.getElementById('incomingModal').classList.remove('active');
+            
+            if (currentRoom) {
+                socket.emit('call_response', {
+                    room_id: currentRoom.roomId,
+                    accepted: false,
+                    caller_sid: currentRoom.callerSid
+                });
+            }
+            resetCallState();
+        }
+
+        // 处理通话被接听
+        async function handleCallAccepted(data) {
+            document.getElementById('callingModal').classList.remove('active');
+            
+            currentRoom = {
+                ...currentRoom,
+                roomId: data.room_id,
+                peerSid: data.peer_sid,
+                isCaller: data.is_caller
+            };
+
+            // 初始化本地媒体
+            try {
+                await initLocalStream();
+            } catch (err) {
+                console.error('初始化媒体失败:', err);
+                showToast('无法访问摄像头或麦克风');
+                endCall();
+                return;
+            }
+
+            // 加入房间
+            socket.emit('join_room', { room_id: currentRoom.roomId });
+
+            // 创建 peer connection
+            await createPeerConnection();
+
+            // 呼叫方创建 offer
+            if (data.is_caller) {
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                
+                socket.emit('offer', {
+                    room_id: currentRoom.roomId,
+                    offer: offer
+                });
+            }
+
+            // 显示通话界面
+            showCallOverlay(currentRoom.targetName);
+
+            // 通知对方流已就绪
+            socket.emit('stream_ready', {
+                room_id: currentRoom.roomId,
+                type: 'both'
+            });
+        }
+
+        // 处理通话被拒绝/取消
+        function handleCallRejected(data) {
+            document.getElementById('incomingModal').classList.remove('active');
+            document.getElementById('callingModal').classList.remove('active');
+            showToast(data.reason || '对方拒绝了通话');
+            resetCallState();
+        }
+
+        // 处理通话结束
+        function handleCallEnded(data) {
+            showToast(data.reason || '通话已结束');
+            closeCall();
+        }
+
+        // 初始化本地媒体流
+        async function initLocalStream() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480 },
+                    audio: true
+                });
+                document.getElementById('localVideo').srcObject = localStream;
+                console.log('本地媒体流已获取');
+            } catch (err) {
+                console.error('获取媒体设备失败:', err);
+                throw err;
+            }
+        }
+
+        // 创建 RTCPeerConnection
+        async function createPeerConnection() {
+            peerConnection = new RTCPeerConnection(rtcConfig);
+
+            // 添加本地流
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
+            });
+
+            // 处理远程流
+            peerConnection.ontrack = (event) => {
+                console.log('收到远程流:', event.streams);
+                const remoteVideo = document.getElementById('remoteVideo');
+                if (remoteVideo && event.streams && event.streams[0]) {
+                    remoteVideo.srcObject = event.streams[0];
+                    remoteVideo.play().catch(e => console.error('视频播放失败:', e));
+                }
+            };
+
+            // 处理 ICE candidate
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate && currentRoom && currentRoom.roomId) {
+                    socket.emit('ice_candidate', {
+                        room_id: currentRoom.roomId,
+                        candidate: event.candidate
+                    });
+                }
+            };
+
+            // 连接状态变化
+            peerConnection.onconnectionstatechange = () => {
+                console.log('连接状态:', peerConnection.connectionState);
+                if (peerConnection.connectionState === 'connected') {
+                    console.log('P2P 连接成功建立！');
+                } else if (peerConnection.connectionState === 'failed') {
+                    console.error('P2P 连接失败');
+                    showToast('连接失败，请重试');
+                }
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log('ICE 连接状态:', peerConnection.iceConnectionState);
+            };
+        }
+
+        // 处理 Offer
+        async function handleOffer(data) {
+            console.log('收到 offer:', data);
+            
+            if (!peerConnection) {
+                await createPeerConnection();
+            }
+
+            try {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                await processIceCandidateQueue();
+
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+
+                socket.emit('answer', {
+                    room_id: currentRoom.roomId,
+                    answer: answer
+                });
+
+                // 通知对方流已就绪
+                socket.emit('stream_ready', {
+                    room_id: currentRoom.roomId,
+                    type: 'both'
+                });
+            } catch (err) {
+                console.error('处理 offer 失败:', err);
+                showToast('连接建立失败');
+            }
+        }
+
+        // 处理 Answer
+        async function handleAnswer(data) {
+            console.log('收到 answer:', data);
+            
+            if (!peerConnection) return;
+            
+            try {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                await processIceCandidateQueue();
+            } catch (err) {
+                console.error('处理 answer 失败:', err);
+            }
+        }
+
+        // 处理 ICE Candidate
+        async function handleICECandidate(data) {
+            const candidate = new RTCIceCandidate(data.candidate);
+            
+            if (!peerConnection) {
+                iceCandidateQueue.push(candidate);
+                return;
+            }
+            
+            if (!peerConnection.remoteDescription) {
+                iceCandidateQueue.push(candidate);
+                return;
+            }
+            
+            try {
+                await peerConnection.addIceCandidate(candidate);
+            } catch (err) {
+                console.error('添加 ICE candidate 失败:', err);
+            }
+        }
+
+        // 处理队列中的 ICE 候选
+        async function processIceCandidateQueue() {
+            if (!peerConnection || !peerConnection.remoteDescription) return;
+            
+            while (iceCandidateQueue.length > 0) {
+                const candidate = iceCandidateQueue.shift();
+                try {
+                    await peerConnection.addIceCandidate(candidate);
+                } catch (err) {
+                    console.error('添加队列中的 ICE candidate 失败:', err);
+                }
+            }
+        }
+
+        // 显示通话界面
+        function showCallOverlay(peerName) {
+            const displayName = peerName || currentRoom?.callerName || currentRoom?.targetName || '未知用户';
+            document.getElementById('callStatus').textContent = `与 ${displayName} 通话中`;
+            document.getElementById('callOverlay').classList.add('active');
+            
+            callStartTime = Date.now();
+            updateCallTimer();
+            callTimer = setInterval(updateCallTimer, 1000);
+
+            // 更新按钮状态
+            updateControlButtons();
+        }
+
+        // 更新控制按钮状态
+        function updateControlButtons() {
+            const muteBtn = document.getElementById('muteBtn');
+            const videoBtn = document.getElementById('videoBtn');
+            
+            if (localStream) {
+                const audioTrack = localStream.getAudioTracks()[0];
+                const videoTrack = localStream.getVideoTracks()[0];
+                
+                if (audioTrack) {
+                    muteBtn.classList.toggle('off', !audioTrack.enabled);
+                    muteBtn.classList.toggle('active', audioTrack.enabled);
+                }
+                
+                if (videoTrack) {
+                    videoBtn.classList.toggle('off', !videoTrack.enabled);
+                    videoBtn.classList.toggle('active', videoTrack.enabled);
+                }
+            }
+        }
+
+        // 更新通话计时
+        function updateCallTimer() {
+            const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
+            const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
+            const seconds = (elapsed % 60).toString().padStart(2, '0');
+            document.getElementById('callTimer').textContent = `${minutes}:${seconds}`;
+        }
+
+        // 静音切换 - 完全关闭/重启麦克风
+        async function toggleMute() {
+            if (!localStream) return;
+            
+            const audioTrack = localStream.getAudioTracks()[0];
+            if (!audioTrack) return;
+
+            isMuted = !isMuted;
+            
+            if (isMuted) {
+                // 停止音频轨道
+                audioTrack.stop();
+                showToast('麦克风已关闭');
+            } else {
+                // 重新获取音频
+                try {
+                    const newStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    const newAudioTrack = newStream.getAudioTracks()[0];
+                    
+                    // 替换轨道
+                    localStream.removeTrack(audioTrack);
+                    localStream.addTrack(newAudioTrack);
+                    
+                    // 更新 peer connection
+                    if (peerConnection) {
+                        const sender = peerConnection.getSenders().find(s => 
+                            s.track && s.track.kind === 'audio'
+                        );
+                        if (sender) {
+                            await sender.replaceTrack(newAudioTrack);
+                        }
+                    }
+                    
+                    showToast('麦克风已开启');
+                } catch (err) {
+                    console.error('重新获取麦克风失败:', err);
+                    showToast('无法重新开启麦克风');
+                    isMuted = true;
+                }
+            }
+            
+            updateControlButtons();
+        }
+
+        // 视频切换 - 完全关闭/重启摄像头
+        async function toggleVideo() {
+            if (!localStream) return;
+            
+            const videoTrack = localStream.getVideoTracks()[0];
+            if (!videoTrack) return;
+
+            isVideoOff = !isVideoOff;
+            
+            if (isVideoOff) {
+                // 停止视频轨道
+                videoTrack.stop();
+                document.getElementById('localVideo').srcObject = null;
+                showToast('摄像头已关闭');
+            } else {
+                // 重新获取视频
+                try {
+                    const newStream = await navigator.mediaDevices.getUserMedia({ 
+                        video: { width: 640, height: 480 }
+                    });
+                    const newVideoTrack = newStream.getVideoTracks()[0];
+                    
+                    // 替换轨道
+                    localStream.removeTrack(videoTrack);
+                    localStream.addTrack(newVideoTrack);
+                    
+                    // 更新本地视频显示
+                    document.getElementById('localVideo').srcObject = localStream;
+                    
+                    // 更新 peer connection
+                    if (peerConnection) {
+                        const sender = peerConnection.getSenders().find(s => 
+                            s.track && s.track.kind === 'video'
+                        );
+                        if (sender) {
+                            await sender.replaceTrack(newVideoTrack);
+                        }
+                    }
+                    
+                    showToast('摄像头已开启');
+                } catch (err) {
+                    console.error('重新获取摄像头失败:', err);
+                    showToast('无法重新开启摄像头');
+                    isVideoOff = true;
+                }
+            }
+            
+            updateControlButtons();
+        }
+
+        // 挂断电话
+        function endCall() {
+            if (currentRoom && currentRoom.roomId) {
+                socket.emit('end_call', { room_id: currentRoom.roomId });
+            }
+            closeCall();
+        }
+
+        // 关闭通话
+        function closeCall() {
+            if (callTimer) {
+                clearInterval(callTimer);
+                callTimer = null;
+            }
+
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+
+            iceCandidateQueue = [];
+            isMuted = false;
+            isVideoOff = false;
+
+            document.getElementById('callOverlay').classList.remove('active');
+            document.getElementById('callingModal').classList.remove('active');
+            document.getElementById('incomingModal').classList.remove('active');
+
+            document.getElementById('localVideo').srcObject = null;
+            document.getElementById('remoteVideo').srcObject = null;
+
+            resetCallState();
+        }
+
+        // 重置通话状态
+        function resetCallState() {
+            currentRoom = null;
+        }
+
+        // 显示 Toast 提示
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
