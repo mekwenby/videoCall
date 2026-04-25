@@ -1246,7 +1246,7 @@
 
             if (!relayConnection) {
                 // 如果还没有 relay 连接（被呼叫方），创建它
-                createRelayConnection(false);
+                await createRelayConnection(false);
             }
 
             try {
