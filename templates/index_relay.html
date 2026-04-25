@@ -395,30 +395,40 @@
         }
 
         .action-btn {
-            padding: 14px 32px;
-            border-radius: 28px;
+            padding: 16px 40px;
+            border-radius: 32px;
             border: none;
-            font-size: 16px;
-            font-weight: 600;
+            font-size: 18px;
+            font-weight: 700;
             cursor: pointer;
             transition: all 0.3s ease;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
         }
 
         .action-btn.reject {
-            background: #fee2e2;
-            color: #ef4444;
+            background: linear-gradient(135deg, #fee2e2, #fecaca);
+            color: #dc2626;
         }
 
         .action-btn.accept {
-            background: #d1fae5;
-            color: #10b981;
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white;
+            box-shadow: 0 4px 20px rgba(16, 185, 129, 0.4);
         }
 
         .action-btn:hover {
-            transform: scale(1.05);
+            transform: scale(1.08) translateY(-2px);
+        }
+
+        .action-btn.reject:hover {
+            box-shadow: 0 6px 20px rgba(220, 38, 38, 0.3);
+        }
+
+        .action-btn.accept:hover {
+            box-shadow: 0 6px 25px rgba(16, 185, 129, 0.5);
         }
 
         /* 呼叫中弹窗 */
@@ -617,16 +627,29 @@
     <script>
         // 全局变量
         let socket = null;
+
+        // HTML 转义函数
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
         let mySid = null;
         let myUsername = null;
         let currentRoom = null;
         let peerConnection = null;
+        let relayConnection = null;  // 中继模式连接
         let localStream = null;
         let callTimer = null;
         let callStartTime = null;
         let iceCandidateQueue = [];
+        let iceQueueLocked = false;
+        let relayIceCandidateQueue = [];
+        let relayIceQueueLocked = false;
         let isMuted = false;
         let isVideoOff = false;
+        let isRelayMode = false;     // 是否处于中继模式
+        let relayPeerSid = null;     // 中继模式下对方的 sid
 
         // WebRTC 配置 - 使用公共 STUN/TURN 服务器
         const rtcConfig = {
@@ -650,6 +673,12 @@
                 console.log('已连接到服务器');
                 mySid = socket.id;
                 console.log('我的SID:', mySid);
+            });
+
+            socket.on('disconnect', () => {
+                console.log('已断开服务器连接');
+                showToast('连接已断开');
+                closeCall();
             });
 
             socket.on('user_assigned', (data) => {
@@ -706,6 +735,28 @@
             socket.on('peer_stream_ready', (data) => {
                 console.log('对方媒体流已就绪:', data);
             });
+
+            // 中继模式事件
+            socket.on('relay_enabled', (data) => {
+                handleRelayEnabled(data);
+            });
+
+            socket.on('relay_offer', (data) => {
+                handleRelayOffer(data);
+            });
+
+            socket.on('relay_answer', (data) => {
+                handleRelayAnswer(data);
+            });
+
+            socket.on('relay_ice_candidate', (data) => {
+                handleRelayIceCandidate(data);
+            });
+
+            socket.on('relay_error', (data) => {
+                showToast('中继模式错误: ' + data.message);
+                closeCall();
+            });
         }
 
         // 更新用户列表
@@ -735,22 +786,24 @@
             userListEl.innerHTML = users.map(user => {
                 const isMe = user.sid === mySid;
                 const inCall = user.in_call;
+                const safeUsername = escapeHtml(user.username);
+                const safeSid = escapeHtml(user.sid);
                 return `
                 <div class="user-item ${inCall ? 'in-call' : ''}">
                     <div class="user-item-info">
-                        <div class="user-avatar">${user.username.slice(0, 2).toUpperCase()}</div>
+                        <div class="user-avatar">${safeUsername.slice(0, 2).toUpperCase()}</div>
                         <div>
                             <div class="user-name">
-                                ${user.username} ${isMe ? '<span style="color:#667eea;font-size:12px;">(我)</span>' : ''}
+                                ${safeUsername} ${isMe ? '<span style="color:#667eea;font-size:12px;">(我)</span>' : ''}
                             </div>
                             ${inCall ? '<div class="user-status">通话中</div>' : ''}
                         </div>
                     </div>
-                    ${isMe 
-                        ? '<span style="color:#9ca3af;font-size:14px;">在线</span>' 
+                    ${isMe
+                        ? '<span style="color:#9ca3af;font-size:14px;">在线</span>'
                         : inCall
                             ? '<span style="color:#9ca3af;font-size:14px;">忙碌</span>'
-                            : `<button class="call-btn" onclick="startCall('${user.sid}', '${user.username}')">
+                            : `<button class="call-btn" onclick="startCall('${safeSid}', '${safeUsername}')">
                                 <span>📹</span> 发起通话
                                </button>`
                     }
@@ -970,8 +1023,10 @@
                 if (peerConnection.connectionState === 'connected') {
                     console.log('P2P 连接成功建立！');
                 } else if (peerConnection.connectionState === 'failed') {
-                    console.error('P2P 连接失败');
-                    showToast('连接失败，请重试');
+                    console.error('P2P 连接失败，尝试切换到中继模式');
+                    if (currentRoom && currentRoom.roomId && !isRelayMode) {
+                        switchToRelayMode();
+                    }
                 }
             };
 
@@ -1049,7 +1104,9 @@
         // 处理队列中的 ICE 候选
         async function processIceCandidateQueue() {
             if (!peerConnection || !peerConnection.remoteDescription) return;
-            
+            if (iceQueueLocked) return;
+
+            iceQueueLocked = true;
             while (iceCandidateQueue.length > 0) {
                 const candidate = iceCandidateQueue.shift();
                 try {
@@ -1058,14 +1115,201 @@
                     console.error('添加队列中的 ICE candidate 失败:', err);
                 }
             }
+            iceQueueLocked = false;
+        }
+
+        // 处理队列中的 Relay ICE 候选
+        async function processRelayIceCandidateQueue() {
+            if (!relayConnection || !relayConnection.remoteDescription) return;
+            if (relayIceQueueLocked) return;
+
+            relayIceQueueLocked = true;
+            while (relayIceCandidateQueue.length > 0) {
+                const candidate = relayIceCandidateQueue.shift();
+                try {
+                    await relayConnection.addIceCandidate(candidate);
+                } catch (err) {
+                    console.error('添加队列中的 Relay ICE candidate 失败:', err);
+                }
+            }
+            relayIceQueueLocked = false;
+        }
+
+        // ============ 中继模式处理 ============
+
+        function switchToRelayMode() {
+            if (isRelayMode) return;
+
+            showToast('P2P 连接失败，切换到中继模式...');
+            isRelayMode = true;
+
+            // 关闭原有 P2P 连接
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            iceCandidateQueue = [];
+            iceQueueLocked = false;
+            relayIceCandidateQueue = [];
+            relayIceQueueLocked = false;
+
+            // 请求服务器启用中继模式
+            socket.emit('request_relay', { room_id: currentRoom.roomId });
+        }
+
+        function handleRelayEnabled(data) {
+            console.log('收到中继模式启用:', data);
+            currentRoom = {
+                ...currentRoom,
+                roomId: data.room_id,
+                peerSid: data.peer_sid
+            };
+            relayPeerSid = data.peer_sid;
+
+            // 更新状态显示为中继模式
+            const callStatusEl = document.getElementById('callStatus');
+            const currentText = callStatusEl.textContent;
+            if (!currentText.includes('(中继)')) {
+                callStatusEl.textContent = currentText.replace('(P2P)', '(中继)');
+            }
+
+            // 创建新的中继连接
+            createRelayConnection(data.is_relay_caller);
+        }
+
+        async function createRelayConnection(isInitiator) {
+            relayConnection = new RTCPeerConnection(rtcConfig);
+
+            // 添加本地流
+            if (localStream) {
+                localStream.getTracks().forEach(track => {
+                    relayConnection.addTrack(track, localStream);
+                });
+            }
+
+            // 处理远程流
+            relayConnection.ontrack = (event) => {
+                console.log('中继模式收到远程流:', event.streams);
+                const remoteVideo = document.getElementById('remoteVideo');
+                if (remoteVideo && event.streams && event.streams[0]) {
+                    remoteVideo.srcObject = event.streams[0];
+                    remoteVideo.play().catch(e => console.error('视频播放失败:', e));
+                }
+            };
+
+            // 处理 ICE candidate
+            relayConnection.onicecandidate = (event) => {
+                if (event.candidate && currentRoom && currentRoom.roomId) {
+                    socket.emit('relay_ice_candidate', {
+                        room_id: currentRoom.roomId,
+                        candidate: event.candidate
+                    });
+                }
+            };
+
+            // 连接状态变化
+            relayConnection.onconnectionstatechange = () => {
+                console.log('中继连接状态:', relayConnection.connectionState);
+                if (relayConnection.connectionState === 'connected') {
+                    showToast('中继连接成功');
+                } else if (relayConnection.connectionState === 'failed') {
+                    console.error('中继连接失败');
+                    showToast('中继连接失败');
+                }
+            };
+
+            relayConnection.oniceconnectionstatechange = () => {
+                console.log('中继 ICE 状态:', relayConnection.iceConnectionState);
+            };
+
+            // 初始化连接
+            try {
+                if (isInitiator) {
+                    // 发起方创建 offer
+                    const offer = await relayConnection.createOffer();
+                    await relayConnection.setLocalDescription(offer);
+
+                    socket.emit('relay_offer', {
+                        room_id: currentRoom.roomId,
+                        offer: offer
+                    });
+                }
+                // 如果不是发起方，等待 relay_offer 事件
+            } catch (err) {
+                console.error('创建中继连接失败:', err);
+                showToast('创建中继连接失败');
+            }
+        }
+
+        async function handleRelayOffer(data) {
+            console.log('收到中继 offer:', data);
+
+            if (!relayConnection) {
+                // 如果还没有 relay 连接（被呼叫方），创建它
+                createRelayConnection(false);
+            }
+
+            try {
+                await relayConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                await processRelayIceCandidateQueue();
+
+                const answer = await relayConnection.createAnswer();
+                await relayConnection.setLocalDescription(answer);
+
+                socket.emit('relay_answer', {
+                    room_id: currentRoom.roomId,
+                    answer: answer
+                });
+            } catch (err) {
+                console.error('处理中继 offer 失败:', err);
+            }
+        }
+
+        async function handleRelayAnswer(data) {
+            console.log('收到中继 answer:', data);
+
+            if (!relayConnection) return;
+
+            try {
+                await relayConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                await processRelayIceCandidateQueue();
+            } catch (err) {
+                console.error('处理中继 answer 失败:', err);
+            }
+        }
+
+        async function handleRelayIceCandidate(data) {
+            if (!relayConnection) {
+                relayIceCandidateQueue.push(data.candidate);
+                return;
+            }
+
+            if (!relayConnection.remoteDescription) {
+                relayIceCandidateQueue.push(data.candidate);
+                return;
+            }
+
+            try {
+                const candidate = new RTCIceCandidate(data.candidate);
+                await relayConnection.addIceCandidate(candidate);
+            } catch (err) {
+                console.error('添加中继 ICE candidate 失败:', err);
+            }
         }
 
         // 显示通话界面
         function showCallOverlay(peerName) {
+            // 先清理旧的定时器
+            if (callTimer) {
+                clearInterval(callTimer);
+                callTimer = null;
+            }
+
             const displayName = peerName || currentRoom?.callerName || currentRoom?.targetName || '未知用户';
-            document.getElementById('callStatus').textContent = `与 ${displayName} 通话中`;
+            const modeText = isRelayMode ? ' (中继)' : ' (P2P)';
+            document.getElementById('callStatus').textContent = `与 ${displayName} 通话中${modeText}`;
             document.getElementById('callOverlay').classList.add('active');
-            
+
             callStartTime = Date.now();
             updateCallTimer();
             callTimer = setInterval(updateCallTimer, 1000);
@@ -1103,104 +1347,85 @@
             document.getElementById('callTimer').textContent = `${minutes}:${seconds}`;
         }
 
-        // 静音切换 - 完全关闭/重启麦克风
-        async function toggleMute() {
+        // 静音切换 - 使用 track.enabled
+        function toggleMute() {
             if (!localStream) return;
-            
+
             const audioTrack = localStream.getAudioTracks()[0];
             if (!audioTrack) return;
 
             isMuted = !isMuted;
-            
-            if (isMuted) {
-                // 停止音频轨道
-                audioTrack.stop();
-                showToast('麦克风已关闭');
-            } else {
-                // 重新获取音频
-                try {
-                    const newStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    const newAudioTrack = newStream.getAudioTracks()[0];
-                    
-                    // 替换轨道
-                    localStream.removeTrack(audioTrack);
-                    localStream.addTrack(newAudioTrack);
-                    
-                    // 更新 peer connection
-                    if (peerConnection) {
-                        const sender = peerConnection.getSenders().find(s => 
-                            s.track && s.track.kind === 'audio'
-                        );
-                        if (sender) {
-                            await sender.replaceTrack(newAudioTrack);
-                        }
-                    }
-                    
-                    showToast('麦克风已开启');
-                } catch (err) {
-                    console.error('重新获取麦克风失败:', err);
-                    showToast('无法重新开启麦克风');
-                    isMuted = true;
+            audioTrack.enabled = !isMuted;
+
+            // 更新 peer connection
+            if (peerConnection) {
+                const sender = peerConnection.getSenders().find(s =>
+                    s.track && s.track.kind === 'audio'
+                );
+                if (sender && sender.track) {
+                    sender.track.enabled = !isMuted;
                 }
             }
-            
+
+            // 更新 relay connection
+            if (relayConnection) {
+                const sender = relayConnection.getSenders().find(s =>
+                    s.track && s.track.kind === 'audio'
+                );
+                if (sender && sender.track) {
+                    sender.track.enabled = !isMuted;
+                }
+            }
+
+            showToast(isMuted ? '麦克风已关闭' : '麦克风已开启');
             updateControlButtons();
         }
 
-        // 视频切换 - 完全关闭/重启摄像头
-        async function toggleVideo() {
+        // 视频切换 - 使用 track.enabled
+        function toggleVideo() {
             if (!localStream) return;
-            
+
             const videoTrack = localStream.getVideoTracks()[0];
             if (!videoTrack) return;
 
             isVideoOff = !isVideoOff;
-            
-            if (isVideoOff) {
-                // 停止视频轨道
-                videoTrack.stop();
-                document.getElementById('localVideo').srcObject = null;
-                showToast('摄像头已关闭');
-            } else {
-                // 重新获取视频
-                try {
-                    const newStream = await navigator.mediaDevices.getUserMedia({ 
-                        video: { width: 640, height: 480 }
-                    });
-                    const newVideoTrack = newStream.getVideoTracks()[0];
-                    
-                    // 替换轨道
-                    localStream.removeTrack(videoTrack);
-                    localStream.addTrack(newVideoTrack);
-                    
-                    // 更新本地视频显示
-                    document.getElementById('localVideo').srcObject = localStream;
-                    
-                    // 更新 peer connection
-                    if (peerConnection) {
-                        const sender = peerConnection.getSenders().find(s => 
-                            s.track && s.track.kind === 'video'
-                        );
-                        if (sender) {
-                            await sender.replaceTrack(newVideoTrack);
-                        }
-                    }
-                    
-                    showToast('摄像头已开启');
-                } catch (err) {
-                    console.error('重新获取摄像头失败:', err);
-                    showToast('无法重新开启摄像头');
-                    isVideoOff = true;
+            videoTrack.enabled = !isVideoOff;
+
+            // 更新 peer connection
+            if (peerConnection) {
+                const sender = peerConnection.getSenders().find(s =>
+                    s.track && s.track.kind === 'video'
+                );
+                if (sender && sender.track) {
+                    sender.track.enabled = !isVideoOff;
                 }
             }
-            
+
+            // 更新 relay connection
+            if (relayConnection) {
+                const sender = relayConnection.getSenders().find(s =>
+                    s.track && s.track.kind === 'video'
+                );
+                if (sender && sender.track) {
+                    sender.track.enabled = !isVideoOff;
+                }
+            }
+
+            // 更新本地视频显示
+            document.getElementById('localVideo').srcObject = localStream;
+
+            showToast(isVideoOff ? '摄像头已关闭' : '摄像头已开启');
             updateControlButtons();
         }
 
         // 挂断电话
         function endCall() {
             if (currentRoom && currentRoom.roomId) {
-                socket.emit('end_call', { room_id: currentRoom.roomId });
+                if (isRelayMode) {
+                    socket.emit('relay_end', { room_id: currentRoom.roomId });
+                } else {
+                    socket.emit('end_call', { room_id: currentRoom.roomId });
+                }
             }
             closeCall();
         }
@@ -1213,8 +1438,21 @@
             }
 
             if (peerConnection) {
+                peerConnection.ontrack = null;
+                peerConnection.onicecandidate = null;
+                peerConnection.onconnectionstatechange = null;
+                peerConnection.oniceconnectionstatechange = null;
                 peerConnection.close();
                 peerConnection = null;
+            }
+
+            if (relayConnection) {
+                relayConnection.ontrack = null;
+                relayConnection.onicecandidate = null;
+                relayConnection.onconnectionstatechange = null;
+                relayConnection.oniceconnectionstatechange = null;
+                relayConnection.close();
+                relayConnection = null;
             }
 
             if (localStream) {
@@ -1223,8 +1461,13 @@
             }
 
             iceCandidateQueue = [];
+            iceQueueLocked = false;
+            relayIceCandidateQueue = [];
+            relayIceQueueLocked = false;
             isMuted = false;
             isVideoOff = false;
+            isRelayMode = false;
+            relayPeerSid = null;
 
             document.getElementById('callOverlay').classList.remove('active');
             document.getElementById('callingModal').classList.remove('active');
@@ -1239,6 +1482,8 @@
         // 重置通话状态
         function resetCallState() {
             currentRoom = null;
+            isRelayMode = false;
+            relayPeerSid = null;
         }
 
         // 显示 Toast 提示
