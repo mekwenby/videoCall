@@ -6,6 +6,7 @@ import logging
 from flask import Flask, render_template
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import socketio as sio
+from media_relay import relay_server
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -331,9 +332,14 @@ def handle_end_call(data):
         
         # 清理房间
         for user_sid in room['users']:
-            leave_room_internal(user_sid, room_id)
-        
-        del rooms[room_id]
+            try:
+                leave_room_internal(user_sid, room_id)
+            except Exception as e:
+                logger.warning(f"离开房间失败 {user_sid}: {e}")
+
+        # 确保房间始终被删除
+        if room_id in rooms:
+            del rooms[room_id]
         broadcast_user_list()
         logger.info(f"通话结束: {room_id}")
 
@@ -345,7 +351,175 @@ def leave_room_internal(sid, room_id):
     leave_room(room_id, sid=sid)
 
 
+# ============ 中继模式信令处理 ============
+
+@socketio.on('request_relay')
+def handle_request_relay(data):
+    """客户端请求切换到中继模式 (P2P 连接失败)"""
+    from flask import request
+    room_id = data.get('room_id')
+    sid = request.sid
+
+    if room_id not in rooms:
+        emit('relay_error', {'message': '房间不存在'})
+        return
+
+    room = rooms[room_id]
+    if sid not in room['users']:
+        emit('relay_error', {'message': '你不是该房间的成员'})
+        return
+
+    # 启用房间的中继模式
+    room['relay_enabled'] = True
+
+    # 获取该用户在房间中的角色 (呼叫方还是被呼叫方)
+    caller_sid = room['users'][0]
+    is_caller = (sid == caller_sid)
+
+    # 通知房间内所有用户切换到中继模式
+    for user_sid in room['users']:
+        emit('relay_enabled', {
+            'room_id': room_id,
+            'peer_sid': room['users'][1] if user_sid == room['users'][0] else room['users'][0],
+            'is_relay_caller': is_caller
+        }, room=user_sid)
+
+    logger.info(f"房间 {room_id} 启用中继模式")
+
+
+@socketio.on('relay_offer')
+def handle_relay_offer(data):
+    """转发中继模式的 WebRTC Offer"""
+    from flask import request
+    room_id = data.get('room_id')
+    offer = data.get('offer')
+    sid = request.sid
+
+    if room_id not in rooms:
+        return
+
+    room = rooms[room_id]
+    if not room.get('relay_enabled'):
+        return
+
+    # 确定是呼叫方还是被呼叫方
+    caller_sid = room['users'][0]
+    is_caller_offer = (sid == caller_sid)
+
+    try:
+        if is_caller_offer:
+            # 呼叫方发起 offer，服务器创建 answer
+            answer = relay_server.relay_offer_from_caller(room_id, offer['sdp'], offer.get('type', 'offer'))
+            # 转发 answer 给呼叫方
+            emit('relay_answer', {
+                'answer': answer,
+                'from_sid': 'relay_server'
+            }, room=sid)
+            # 通知被呼叫方有 offer
+            callee_sid = room['users'][1]
+            emit('relay_offer', {
+                'offer': offer,
+                'from_sid': 'relay_server'
+            }, room=callee_sid)
+        else:
+            # 被呼叫方发起 offer
+            answer = relay_server.relay_offer_from_callee(room_id, offer['sdp'], offer.get('type', 'offer'))
+            emit('relay_answer', {
+                'answer': answer,
+                'from_sid': 'relay_server'
+            }, room=sid)
+            caller_sid = room['users'][0]
+            emit('relay_offer', {
+                'offer': offer,
+                'from_sid': 'relay_server'
+            }, room=caller_sid)
+    except Exception as e:
+        logger.error(f"中继 offer 处理失败: {e}")
+        emit('relay_error', {'message': str(e)}, room=sid)
+
+
+@socketio.on('relay_answer')
+def handle_relay_answer(data):
+    """转发中继模式的 WebRTC Answer"""
+    from flask import request
+    room_id = data.get('room_id')
+    answer = data.get('answer')
+    sid = request.sid
+
+    if room_id not in rooms:
+        return
+
+    room = rooms[room_id]
+    if not room.get('relay_enabled'):
+        return
+
+    # 确定是呼叫方还是被呼叫方
+    caller_sid = room['users'][0]
+    is_caller = (sid == caller_sid)
+
+    # 正确处理 SDP answer（不是 ICE candidate）
+    relay_server.handle_relay_answer(room_id, answer.get('sdp', ''), answer.get('type', 'answer'), is_caller)
+
+
+@socketio.on('relay_ice_candidate')
+def handle_relay_ice_candidate(data):
+    """转发中继模式的 ICE Candidate"""
+    from flask import request
+    room_id = data.get('room_id')
+    candidate = data.get('candidate')
+    sid = request.sid
+
+    if room_id not in rooms:
+        return
+
+    room = rooms[room_id]
+    if not room.get('relay_enabled'):
+        return
+
+    # 确定发送方是呼叫方还是被呼叫方
+    caller_sid = room['users'][0]
+    is_caller = (sid == caller_sid)
+
+    # 转发 ICE candidate 到中继服务器（relay 模式下不转发给 peer）
+    relay_server.add_relay_candidate(room_id, candidate, is_caller)
+
+
+@socketio.on('relay_end')
+def handle_relay_end(data):
+    """中继模式下结束通话"""
+    from flask import request
+    room_id = data.get('room_id')
+    sid = request.sid
+
+    if room_id in rooms:
+        room = rooms[room_id]
+        # 关闭中继连接
+        relay_server.close_relay_room(room_id)
+
+        # 通知房间内其他用户
+        for other_sid in room['users']:
+            if other_sid != sid:
+                emit('call_ended', {'reason': '对方已挂断'}, room=other_sid)
+
+        # 清理房间
+        for user_sid in room['users']:
+            try:
+                leave_room_internal(user_sid, room_id)
+            except Exception as e:
+                logger.warning(f"离开房间失败 {user_sid}: {e}")
+
+        # 确保房间始终被删除
+        if room_id in rooms:
+            del rooms[room_id]
+        broadcast_user_list()
+        logger.info(f"中继通话结束: {room_id}")
+
+
 if __name__ == '__main__':
+    # 启动媒体中继服务
+    relay_server.start()
+    print("媒体中继服务已启动 (P2P 失败时的兜底方案)")
+
     print("启动视频通话服务器 (服务器中转模式)...")
     print("访问地址: http://localhost:5000")
     socketio.run(app, host='0.0.0.0', port=5000, debug=True)
