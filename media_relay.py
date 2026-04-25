@@ -139,7 +139,7 @@ class MediaRelayServer:
         pc = room['pc_caller'] if is_caller else room['pc_callee']
 
         try:
-            await pc.addIceCandidate(RTCIceCandidate(candidate))
+            await pc.addIceCandidate(RTCIceCandidate(**candidate))
         except Exception as e:
             logger.warning(f"添加 ICE candidate 失败: {e}")
 
