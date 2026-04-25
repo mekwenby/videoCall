@@ -8,7 +8,7 @@ import logging
 import threading
 from typing import Dict, Optional
 
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaRelay
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,8 @@ class MediaRelayServer:
             logger.info(f"中继收到呼叫方媒体轨道: {track.kind}")
             room_data['caller_track'] = track
             # 将呼叫方的轨道转发给被呼叫方
-            relay.subscribe(track, to=pc_callee)
+            new_track = relay.subscribe(track)
+            pc_callee.addTrack(new_track)
 
         # pc_callee 处理来自被呼叫方的连接
         @pc_callee.on("track")
@@ -75,7 +76,8 @@ class MediaRelayServer:
             logger.info(f"中继收到被呼叫方媒体轨道: {track.kind}")
             room_data['callee_track'] = track
             # 将被呼叫方的轨道转发给呼叫方
-            relay.subscribe(track, to=pc_caller)
+            new_track = relay.subscribe(track)
+            pc_caller.addTrack(new_track)
 
         return room_data
 
@@ -137,7 +139,7 @@ class MediaRelayServer:
         pc = room['pc_caller'] if is_caller else room['pc_callee']
 
         try:
-            await pc.addIceCandidate(candidate)
+            await pc.addIceCandidate(RTCIceCandidate(candidate))
         except Exception as e:
             logger.warning(f"添加 ICE candidate 失败: {e}")
 
