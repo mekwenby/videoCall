@@ -139,7 +139,14 @@ class MediaRelayServer:
         pc = room['pc_caller'] if is_caller else room['pc_callee']
 
         try:
-            await pc.addIceCandidate(RTCIceCandidate(**candidate))
+            # candidate 可能是字符串或包含 candidate 字段的 dict
+            if isinstance(candidate, str):
+                ice_candidate = RTCIceCandidate(candidate)
+            elif 'candidate' in candidate:
+                ice_candidate = RTCIceCandidate(candidate['candidate'])
+            else:
+                ice_candidate = RTCIceCandidate(**candidate)
+            await pc.addIceCandidate(ice_candidate)
         except Exception as e:
             logger.warning(f"添加 ICE candidate 失败: {e}")
 
