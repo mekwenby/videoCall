@@ -656,7 +656,9 @@
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' }
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+                { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }
             ],
             iceCandidatePoolSize: 10
         };
@@ -1293,11 +1295,17 @@
                 if (isInitiator) {
                     // 发起方创建 offer
                     const offer = await relayConnection.createOffer();
-                    await relayConnection.setLocalDescription(offer);
+                    // 移除 transport-wide-cc 扩展避免与 aiortc 冲突
+                    const modifiedSdp = offer.sdp.replace(/a=extmap:[0-9]+ urn:ietf:params:rtp-hdrext:transport-wide-cc-extensions\r\n/g, '');
+                    const modifiedOffer = new RTCSessionDescription({
+                        type: offer.type,
+                        sdp: modifiedSdp
+                    });
+                    await relayConnection.setLocalDescription(modifiedOffer);
 
                     socket.emit('relay_offer', {
                         room_id: currentRoom.roomId,
-                        offer: offer
+                        offer: modifiedOffer
                     });
                 }
                 // 如果不是发起方，等待 relay_offer 事件
@@ -1316,7 +1324,13 @@
             }
 
             try {
-                await relayConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                // 移除 transport-wide-cc 扩展避免冲突
+                const offerSdp = data.offer.sdp.replace(/a=extmap:[0-9]+ urn:ietf:params:rtp-hdrext:transport-wide-cc-extensions\r\n/g, '');
+                const modifiedOffer = new RTCSessionDescription({
+                    type: data.offer.type,
+                    sdp: offerSdp
+                });
+                await relayConnection.setRemoteDescription(modifiedOffer);
                 await processRelayIceCandidateQueue();
 
                 const answer = await relayConnection.createAnswer();
