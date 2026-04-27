@@ -638,14 +638,11 @@
         let myUsername = null;
         let currentRoom = null;
         let peerConnection = null;
-        let relayConnection = null;  // 中继模式连接
         let localStream = null;
         let callTimer = null;
         let callStartTime = null;
         let iceCandidateQueue = [];
         let iceQueueLocked = false;
-        let relayIceCandidateQueue = [];
-        let relayIceQueueLocked = false;
         let isMuted = false;
         let isVideoOff = false;
         let isRelayMode = false;     // 是否处于中继模式
@@ -743,16 +740,8 @@
                 handleRelayEnabled(data);
             });
 
-            socket.on('relay_offer', (data) => {
-                handleRelayOffer(data);
-            });
-
-            socket.on('relay_answer', (data) => {
-                handleRelayAnswer(data);
-            });
-
-            socket.on('relay_ice_candidate', (data) => {
-                handleRelayIceCandidate(data);
+            socket.on('relay_video_frame', (data) => {
+                handleRelayVideoFrame(data);
             });
 
             socket.on('relay_error', (data) => {
@@ -1186,24 +1175,11 @@
             iceQueueLocked = false;
         }
 
-        // 处理队列中的 Relay ICE 候选
-        async function processRelayIceCandidateQueue() {
-            if (!relayConnection || !relayConnection.remoteDescription) return;
-            if (relayIceQueueLocked) return;
+        // ============ 中继模式处理 (视频帧转发) ============
 
-            relayIceQueueLocked = true;
-            while (relayIceCandidateQueue.length > 0) {
-                const candidate = relayIceCandidateQueue.shift();
-                try {
-                    await relayConnection.addIceCandidate(candidate);
-                } catch (err) {
-                    console.error('添加队列中的 Relay ICE candidate 失败:', err);
-                }
-            }
-            relayIceQueueLocked = false;
-        }
-
-        // ============ 中继模式处理 ============
+        let relayFrameSender = null;  // 视频帧发送定时器
+        let relayFrameCanvas = null;
+        let relayFrameCtx = null;
 
         function switchToRelayMode() {
             if (isRelayMode) return;
@@ -1218,8 +1194,6 @@
             }
             iceCandidateQueue = [];
             iceQueueLocked = false;
-            relayIceCandidateQueue = [];
-            relayIceQueueLocked = false;
 
             // 请求服务器启用中继模式
             socket.emit('request_relay', { room_id: currentRoom.roomId });
@@ -1241,145 +1215,63 @@
                 callStatusEl.textContent = currentText.replace('(P2P)', '(中继)');
             }
 
-            // 创建新的中继连接
-            createRelayConnection(data.is_relay_caller);
+            // 开始发送视频帧
+            startRelayFrameSender();
         }
 
-        async function createRelayConnection(isInitiator) {
-            relayConnection = new RTCPeerConnection(rtcConfig);
+        function startRelayFrameSender() {
+            // 停止之前的发送器
+            stopRelayFrameSender();
 
-            // 添加本地流
-            if (localStream) {
-                localStream.getTracks().forEach(track => {
-                    relayConnection.addTrack(track, localStream);
-                });
+            if (!localStream) return;
+
+            // 创建 canvas 用于帧捕获
+            relayFrameCanvas = document.createElement('canvas');
+            relayFrameCtx = relayFrameCanvas.getContext('2d');
+
+            const video = localStream.getVideoTracks()[0];
+            if (video) {
+                const settings = video.getSettings();
+                relayFrameCanvas.width = settings.width || 640;
+                relayFrameCanvas.height = settings.height || 480;
             }
 
-            // 处理远程流
-            relayConnection.ontrack = (event) => {
-                console.log('中继模式收到远程流:', event.streams);
-                const remoteVideo = document.getElementById('remoteVideo');
-                if (remoteVideo && event.streams && event.streams[0]) {
-                    remoteVideo.srcObject = event.streams[0];
-                    remoteVideo.play().catch(e => console.error('视频播放失败:', e));
+            // 每 100ms 发送一帧（约 10fps）
+            relayFrameSender = setInterval(() => {
+                if (localStream && localStream.getVideoTracks()[0].enabled) {
+                    captureAndSendFrame();
                 }
-            };
+            }, 100);
+        }
 
-            // 处理 ICE candidate
-            relayConnection.onicecandidate = (event) => {
-                if (event.candidate && currentRoom && currentRoom.roomId) {
-                    socket.emit('relay_ice_candidate', {
-                        room_id: currentRoom.roomId,
-                        candidate: event.candidate
-                    });
-                }
-            };
-
-            // 连接状态变化
-            relayConnection.onconnectionstatechange = () => {
-                console.log('中继连接状态:', relayConnection.connectionState);
-                if (relayConnection.connectionState === 'connected') {
-                    showToast('中继连接成功');
-                } else if (relayConnection.connectionState === 'failed') {
-                    console.error('中继连接失败');
-                    showToast('中继连接失败');
-                }
-            };
-
-            relayConnection.oniceconnectionstatechange = () => {
-                console.log('中继 ICE 状态:', relayConnection.iceConnectionState);
-            };
-
-            // 初始化连接
-            try {
-                if (isInitiator) {
-                    // 发起方创建 offer
-                    const offer = await relayConnection.createOffer();
-                    // 移除 transport-wide-cc 扩展避免与 aiortc 冲突
-                    const modifiedSdp = offer.sdp.replace(/a=extmap:[0-9]+ urn:ietf:params:rtp-hdrext:transport-wide-cc-extensions\r\n/g, '');
-                    const modifiedOffer = new RTCSessionDescription({
-                        type: offer.type,
-                        sdp: modifiedSdp
-                    });
-                    await relayConnection.setLocalDescription(modifiedOffer);
-
-                    socket.emit('relay_offer', {
-                        room_id: currentRoom.roomId,
-                        offer: modifiedOffer
-                    });
-                }
-                // 如果不是发起方，等待 relay_offer 事件
-            } catch (err) {
-                console.error('创建中继连接失败:', err);
-                showToast('创建中继连接失败');
+        function stopRelayFrameSender() {
+            if (relayFrameSender) {
+                clearInterval(relayFrameSender);
+                relayFrameSender = null;
             }
         }
 
-        async function handleRelayOffer(data) {
-            console.log('收到中继 offer:', data);
-
-            if (!relayConnection) {
-                // 如果还没有 relay 连接（被呼叫方），创建它
-                await createRelayConnection(false);
-            }
+        function captureAndSendFrame() {
+            const video = document.getElementById('localVideo');
+            if (!video || video.readyState < 2) return;
 
             try {
-                // 移除 transport-wide-cc 扩展避免冲突
-                const offerSdp = data.offer.sdp.replace(/a=extmap:[0-9]+ urn:ietf:params:rtp-hdrext:transport-wide-cc-extensions\r\n/g, '');
-                const modifiedOffer = new RTCSessionDescription({
-                    type: data.offer.type,
-                    sdp: offerSdp
-                });
-                await relayConnection.setRemoteDescription(modifiedOffer);
-                await processRelayIceCandidateQueue();
-
-                const answer = await relayConnection.createAnswer();
-                await relayConnection.setLocalDescription(answer);
-
-                socket.emit('relay_answer', {
+                relayFrameCtx.drawImage(video, 0, 0, relayFrameCanvas.width, relayFrameCanvas.height);
+                const frameData = relayFrameCanvas.toDataURL('image/jpeg', 0.6);
+                socket.emit('relay_video_frame', {
                     room_id: currentRoom.roomId,
-                    answer: answer
+                    frame: frameData
                 });
             } catch (err) {
-                console.error('处理中继 offer 失败:', err);
+                // 忽略绘制错误
             }
         }
 
-        async function handleRelayAnswer(data) {
-            console.log('收到中继 answer:', data);
-
-            if (!relayConnection) return;
-
-            try {
-                // 移除 transport-wide-cc 扩展避免冲突
-                const answerSdp = data.answer.sdp.replace(/a=extmap:[0-9]+ urn:ietf:params:rtp-hdrext:transport-wide-cc-extensions\r\n/g, '');
-                const modifiedAnswer = new RTCSessionDescription({
-                    type: data.answer.type,
-                    sdp: answerSdp
-                });
-                await relayConnection.setRemoteDescription(modifiedAnswer);
-                await processRelayIceCandidateQueue();
-            } catch (err) {
-                console.error('处理中继 answer 失败:', err);
-            }
-        }
-
-        async function handleRelayIceCandidate(data) {
-            if (!relayConnection) {
-                relayIceCandidateQueue.push(data.candidate);
-                return;
-            }
-
-            if (!relayConnection.remoteDescription) {
-                relayIceCandidateQueue.push(data.candidate);
-                return;
-            }
-
-            try {
-                const candidate = new RTCIceCandidate(data.candidate);
-                await relayConnection.addIceCandidate(candidate);
-            } catch (err) {
-                console.error('添加中继 ICE candidate 失败:', err);
+        function handleRelayVideoFrame(data) {
+            // 显示接收到的视频帧
+            const remoteVideo = document.getElementById('remoteVideo');
+            if (remoteVideo) {
+                remoteVideo.src = data.frame;
             }
         }
 
@@ -1453,16 +1345,6 @@
                 }
             }
 
-            // 更新 relay connection
-            if (relayConnection) {
-                const sender = relayConnection.getSenders().find(s =>
-                    s.track && s.track.kind === 'audio'
-                );
-                if (sender && sender.track) {
-                    sender.track.enabled = !isMuted;
-                }
-            }
-
             showToast(isMuted ? '麦克风已关闭' : '麦克风已开启');
             updateControlButtons();
         }
@@ -1480,16 +1362,6 @@
             // 更新 peer connection
             if (peerConnection) {
                 const sender = peerConnection.getSenders().find(s =>
-                    s.track && s.track.kind === 'video'
-                );
-                if (sender && sender.track) {
-                    sender.track.enabled = !isVideoOff;
-                }
-            }
-
-            // 更新 relay connection
-            if (relayConnection) {
-                const sender = relayConnection.getSenders().find(s =>
                     s.track && s.track.kind === 'video'
                 );
                 if (sender && sender.track) {
@@ -1532,14 +1404,10 @@
                 peerConnection = null;
             }
 
-            if (relayConnection) {
-                relayConnection.ontrack = null;
-                relayConnection.onicecandidate = null;
-                relayConnection.onconnectionstatechange = null;
-                relayConnection.oniceconnectionstatechange = null;
-                relayConnection.close();
-                relayConnection = null;
-            }
+            // 停止中继模式视频帧发送
+            stopRelayFrameSender();
+            relayFrameCanvas = null;
+            relayFrameCtx = null;
 
             if (localStream) {
                 localStream.getTracks().forEach(track => track.stop());
@@ -1548,8 +1416,6 @@
 
             iceCandidateQueue = [];
             iceQueueLocked = false;
-            relayIceCandidateQueue = [];
-            relayIceQueueLocked = false;
             isMuted = false;
             isVideoOff = false;
             isRelayMode = false;
@@ -1561,6 +1427,7 @@
 
             document.getElementById('localVideo').srcObject = null;
             document.getElementById('remoteVideo').srcObject = null;
+            document.getElementById('remoteVideo').src = null;
 
             resetCallState();
         }
