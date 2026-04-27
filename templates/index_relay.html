@@ -813,6 +813,23 @@
 
         // 发起通话
         async function startCall(targetSid, targetName) {
+            // 先检查媒体设备
+            const check = await checkMediaDevices();
+            if (!check.available) {
+                let msg = '';
+                if (check.reason === 'no_devices') {
+                    msg = '您的设备没有检测到摄像头和麦克风';
+                } else if (check.reason === 'no_camera') {
+                    msg = '您的设备没有检测到摄像头';
+                } else if (check.reason === 'no_microphone') {
+                    msg = '您的设备没有检测到麦克风';
+                } else {
+                    msg = '无法访问您的摄像头或麦克风';
+                }
+                showToast(msg);
+                return;
+            }
+
             currentRoom = {
                 targetSid: targetSid,
                 targetName: targetName,
@@ -874,11 +891,22 @@
                 await initLocalStream();
             } catch (err) {
                 console.error('初始化媒体失败:', err);
-                showToast('无法访问摄像头或麦克风');
+                let msg = '无法访问摄像头或麦克风';
+                if (err.name === 'NotAllowedError') {
+                    msg = '请允许访问摄像头和麦克风';
+                } else if (err.name === 'NotFoundError') {
+                    msg = '未检测到摄像头或麦克风设备';
+                } else if (err.name === 'OverconstrainedError') {
+                    msg = '摄像头不支持所需分辨率';
+                } else if (err.name === 'NotReadableError') {
+                    msg = '摄像头或麦克风已被其他应用占用';
+                }
+                showToast(msg);
                 socket.emit('call_response', {
                     room_id: currentRoom.roomId,
                     accepted: false,
-                    caller_sid: currentRoom.callerSid
+                    caller_sid: currentRoom.callerSid,
+                    reason: err.name
                 });
                 return;
             }
@@ -927,7 +955,17 @@
                 await initLocalStream();
             } catch (err) {
                 console.error('初始化媒体失败:', err);
-                showToast('无法访问摄像头或麦克风');
+                let msg = '无法访问摄像头或麦克风';
+                if (err.name === 'NotAllowedError') {
+                    msg = '请允许访问摄像头和麦克风';
+                } else if (err.name === 'NotFoundError') {
+                    msg = '未检测到摄像头或麦克风设备';
+                } else if (err.name === 'OverconstrainedError') {
+                    msg = '摄像头不支持所需分辨率';
+                } else if (err.name === 'NotReadableError') {
+                    msg = '摄像头或麦克风已被其他应用占用';
+                }
+                showToast(msg);
                 endCall();
                 return;
             }
@@ -973,11 +1011,34 @@
             closeCall();
         }
 
+        // 检查媒体设备可用性
+        async function checkMediaDevices() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const hasCamera = devices.some(d => d.kind === 'videoinput');
+                const hasMicrophone = devices.some(d => d.kind === 'audioinput');
+
+                if (!hasCamera && !hasMicrophone) {
+                    return { available: false, reason: 'no_devices', camera: false, microphone: false };
+                }
+                if (!hasCamera) {
+                    return { available: false, reason: 'no_camera', camera: false, microphone: true };
+                }
+                if (!hasMicrophone) {
+                    return { available: false, reason: 'no_microphone', camera: true, microphone: false };
+                }
+                return { available: true, camera: true, microphone: true };
+            } catch (err) {
+                console.error('检查设备失败:', err);
+                return { available: false, reason: 'enum_failed', camera: false, microphone: false };
+            }
+        }
+
         // 初始化本地媒体流
         async function initLocalStream() {
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({
-                    video: { width: 640, height: 480 },
+                    video: { width: { ideal: 640 }, height: { ideal: 480 } },
                     audio: true
                 });
                 document.getElementById('localVideo').srcObject = localStream;
