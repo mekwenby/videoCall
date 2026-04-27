@@ -1351,7 +1351,13 @@
             if (!relayConnection) return;
 
             try {
-                await relayConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                // 移除 transport-wide-cc 扩展避免冲突
+                const answerSdp = data.answer.sdp.replace(/a=extmap:[0-9]+ urn:ietf:params:rtp-hdrext:transport-wide-cc-extensions\r\n/g, '');
+                const modifiedAnswer = new RTCSessionDescription({
+                    type: data.answer.type,
+                    sdp: answerSdp
+                });
+                await relayConnection.setRemoteDescription(modifiedAnswer);
                 await processRelayIceCandidateQueue();
             } catch (err) {
                 console.error('处理中继 answer 失败:', err);
