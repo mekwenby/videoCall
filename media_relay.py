@@ -139,14 +139,25 @@ class MediaRelayServer:
         pc = room['pc_caller'] if is_caller else room['pc_callee']
 
         try:
-            # candidate 可能是字符串或包含 candidate 字段的 dict
-            if isinstance(candidate, str):
-                ice_candidate = RTCIceCandidate(candidate)
-            elif 'candidate' in candidate:
-                ice_candidate = RTCIceCandidate(candidate['candidate'])
-            else:
-                ice_candidate = RTCIceCandidate(**candidate)
-            await pc.addIceCandidate(ice_candidate)
+            # candidate 是 dict，包含 RFC 5245 格式的 candidate 字符串
+            # 格式: "candidate:1 1 UDP 2132263935 192.168.1.100 54123 typ host"
+            cand_str = candidate.get('candidate', '')
+            parts = cand_str.split()
+            if len(parts) >= 8:
+                # parts[0]="candidate:1", parts[1]=foundation, parts[2]=component,
+                # parts[3]=protocol, parts[4]=priority, parts[5]=ip, parts[6]=port, parts[7]=typ
+                ice_candidate = RTCIceCandidate(
+                    foundation=parts[1],
+                    component=int(parts[2]),
+                    protocol=parts[3].lower(),
+                    priority=int(parts[4]),
+                    ip=parts[5],
+                    port=int(parts[6]),
+                    type=parts[7],
+                    sdpMid=candidate.get('sdpMid'),
+                    sdpMLineIndex=candidate.get('sdpMLineIndex')
+                )
+                await pc.addIceCandidate(ice_candidate)
         except Exception as e:
             logger.warning(f"添加 ICE candidate 失败: {e}")
 
