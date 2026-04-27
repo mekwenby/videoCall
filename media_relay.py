@@ -141,18 +141,26 @@ class MediaRelayServer:
         try:
             # candidate 是 dict，包含 RFC 5245 格式的 candidate 字符串
             # 格式: "candidate:1 1 UDP 2132263935 192.168.1.100 54123 typ host"
+            # - parts[0]="candidate:1" (component 嵌入在尾部)
+            # - parts[1]=foundation
+            # - parts[2]=protocol (UDP/TCP)
+            # - parts[3]=priority
+            # - parts[4]=ip
+            # - parts[5]=port
+            # - parts[6]="typ"
+            # - parts[7]=type (host/srflx/relay)
             cand_str = candidate.get('candidate', '')
             parts = cand_str.split()
             if len(parts) >= 8:
-                # parts[0]="candidate:1", parts[1]=foundation, parts[2]=component,
-                # parts[3]=protocol, parts[4]=priority, parts[5]=ip, parts[6]=port, parts[7]=typ
+                # 从 "candidate:1" 提取 component
+                component = int(parts[0].split(':')[1])
                 ice_candidate = RTCIceCandidate(
                     foundation=parts[1],
-                    component=int(parts[2]),
-                    protocol=parts[3].lower(),
-                    priority=int(parts[4]),
-                    ip=parts[5],
-                    port=int(parts[6]),
+                    component=component,
+                    protocol=parts[2].lower(),
+                    priority=int(parts[3]),
+                    ip=parts[4],
+                    port=int(parts[5]),
                     type=parts[7],
                     sdpMid=candidate.get('sdpMid'),
                     sdpMLineIndex=candidate.get('sdpMLineIndex')
