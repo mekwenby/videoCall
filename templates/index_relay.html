@@ -1223,22 +1223,29 @@
             // 停止之前的发送器
             stopRelayFrameSender();
 
-            if (!localStream) return;
+            if (!localStream) {
+                console.error('startRelayFrameSender: localStream 不存在');
+                return;
+            }
 
             // 创建 canvas 用于帧捕获
             relayFrameCanvas = document.createElement('canvas');
             relayFrameCtx = relayFrameCanvas.getContext('2d');
 
-            const video = localStream.getVideoTracks()[0];
-            if (video) {
-                const settings = video.getSettings();
-                relayFrameCanvas.width = settings.width || 640;
-                relayFrameCanvas.height = settings.height || 480;
+            const video = document.getElementById('localVideo');
+            if (video && video.videoWidth > 0 && video.videoHeight > 0) {
+                relayFrameCanvas.width = video.videoWidth;
+                relayFrameCanvas.height = video.videoHeight;
+            } else {
+                relayFrameCanvas.width = 640;
+                relayFrameCanvas.height = 480;
             }
+
+            console.log('开始中继帧发送, canvas 尺寸:', relayFrameCanvas.width, 'x', relayFrameCanvas.height);
 
             // 每 100ms 发送一帧（约 10fps）
             relayFrameSender = setInterval(() => {
-                if (localStream && localStream.getVideoTracks()[0].enabled) {
+                if (localStream && localStream.getVideoTracks()[0] && localStream.getVideoTracks()[0].enabled) {
                     captureAndSendFrame();
                 }
             }, 100);
@@ -1253,7 +1260,17 @@
 
         function captureAndSendFrame() {
             const video = document.getElementById('localVideo');
-            if (!video || video.readyState < 2) return;
+            if (!video) {
+                console.error('captureAndSendFrame: 视频元素不存在');
+                return;
+            }
+            if (video.readyState < 2) {
+                return;
+            }
+            if (!relayFrameCtx) {
+                console.error('captureAndSendFrame: relayFrameCtx 不存在');
+                return;
+            }
 
             try {
                 relayFrameCtx.drawImage(video, 0, 0, relayFrameCanvas.width, relayFrameCanvas.height);
@@ -1263,7 +1280,7 @@
                     frame: frameData
                 });
             } catch (err) {
-                // 忽略绘制错误
+                console.error('发送帧失败:', err);
             }
         }
 
@@ -1271,7 +1288,23 @@
             // 显示接收到的视频帧
             const remoteVideo = document.getElementById('remoteVideo');
             if (remoteVideo) {
-                remoteVideo.src = data.frame;
+                // base64 转 Blob URL 设置到 video.srcObject
+                const byteString = atob(data.frame.split(',')[1]);
+                const mimeType = data.frame.match(/data:([^;]+)/)[1];
+                const ab = new ArrayBuffer(byteString.length);
+                const ia = new Uint8Array(ab);
+                for (let i = 0; i < byteString.length; i++) {
+                    ia[i] = byteString.charCodeAt(i);
+                }
+                const blob = new Blob([ab], { type: mimeType });
+                const url = URL.createObjectURL(blob);
+                if (remoteVideo.srcObject) {
+                    // 释放之前的 blob URL
+                    URL.revokeObjectURL(remoteVideo.srcObject);
+                }
+                remoteVideo.srcObject = null;
+                remoteVideo.src = url;
+                remoteVideo.play().catch(() => {});
             }
         }
 
