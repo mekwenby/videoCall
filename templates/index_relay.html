@@ -813,23 +813,6 @@
 
         // 发起通话
         async function startCall(targetSid, targetName) {
-            // 先检查媒体设备
-            const check = await checkMediaDevices();
-            if (!check.available) {
-                let msg = '';
-                if (check.reason === 'no_devices') {
-                    msg = '您的设备没有检测到摄像头和麦克风';
-                } else if (check.reason === 'no_camera') {
-                    msg = '您的设备没有检测到摄像头';
-                } else if (check.reason === 'no_microphone') {
-                    msg = '您的设备没有检测到麦克风';
-                } else {
-                    msg = '无法访问您的摄像头或麦克风';
-                }
-                showToast(msg);
-                return;
-            }
-
             currentRoom = {
                 targetSid: targetSid,
                 targetName: targetName,
@@ -1045,7 +1028,29 @@
                 console.log('本地媒体流已获取');
             } catch (err) {
                 console.error('获取媒体设备失败:', err);
-                throw err;
+                // 尝试仅获取音频
+                try {
+                    const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    // 创建空白视频
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 640;
+                    canvas.height = 480;
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = '#1a1a2e';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = '48px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('无摄像头', canvas.width / 2, canvas.height / 2);
+
+                    const videoStream = canvas.captureStream(15);
+                    localStream = new MediaStream([...audioStream.getAudioTracks(), ...videoStream.getVideoTracks()]);
+                    document.getElementById('localVideo').srcObject = localStream;
+                    console.log('仅音频流已获取，视频使用空白画面');
+                } catch (audioErr) {
+                    console.error('获取音频也失败:', audioErr);
+                    throw err;
+                }
             }
         }
 
